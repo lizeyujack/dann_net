@@ -66,7 +66,18 @@ class DANN:
     self.optimizer = torch.optim.Adam(self.my_net.parameters(), lr=lr)
     self.loss_class = torch.nn.MSELoss()
     self.loss_domain = torch.nn.MSELoss()
-    
+
+  def acc_rate(self,predict,labels):
+    counter = 0
+    for i,j in zip(predict,labels):
+      temp = torch.zeros(1,labels.shape[1])
+      temp[:,int(i.argmax(dim=0))] = 1
+      # print(temp*j)
+      if torch.zeros(1,3).equal(temp*j):
+        pass
+      else:
+        counter += 1
+    return counter/predict.shape[0]
         
   def fetch_data(self,fold):
     train_key, train_index = list(self.data.keys()), list(range(domain_num))
@@ -81,42 +92,37 @@ class DANN:
     train_X, valid_X = train_X.astype(np.float32), valid_X.astype(np.float32)
     return (torch.tensor(train_X), torch.tensor(train_y), torch.tensor(train_d)), (torch.tensor(valid_X), torch.tensor(valid_y), torch.tensor(valid_d))
   
-  def train(self,n_epoch,batch_size,train,test):
-    s_img, s_label,domain_label = train
+  def test(self,test):
+    # to do
     t_img,t_label,valid_d=test
+    class_output, valid_output = self.my_net(input_data=t_img.to(torch.float32))
+    acc_test = self.acc_rate(self,class_output,t_label)
+    acc_domain = self.acc_rate(self,valid_output,valid_d)
+    print('test acc is {} the acc_domain is {}'.format(acc_test,acc_domain))
 
+    return 0
+  def train(self,n_epoch,batch_size,train,folder):
+    s_img, s_label,domain_label = train
     for epoch in range(n_epoch):
       index_batch = 0
       while((index_batch)*batch_size < len(s_label)):
-        print('indexss\t',(index_batch+1)*batch_size)
-        # p = float(i + epoch * len_dataloader) / n_epoch / len_dataloader
-        p = float(epoch + epoch * n_epoch) / n_epoch / n_epoch
-        alpha = 2. / (1. + np.exp(-10 * p)) - 1
-
         # training model using source data
         self.my_net.zero_grad()
         # batch_size = len(s_label)
         if ((index_batch+1)*batch_size < len(s_label)):
           s_img_mini = s_img[index_batch*batch_size:(index_batch+1)*batch_size,:]
           s_label_mini = s_label[index_batch*batch_size:(index_batch+1)*batch_size,:]
-          domain_label_mini = domain_label[index_batch*batch_size:(index_batch+1)*batch_size,:]
-          
+         
         else:
           s_img_mini = s_img[index_batch*batch_size:,:]
           s_label_mini = s_label[index_batch*batch_size:,:]
-          domain_label_mini = domain_label[index_batch*batch_size:,:]
 
-
+        domain_label_mini =domain_label[folder*batch_size:(folder+1)*batch_size,:]
         class_output, domain_output = self.my_net(input_data=s_img_mini.to(torch.float32))
+
         err_s_label = self.loss_class(class_output.to(torch.float32), s_label_mini.to(torch.float32))
         err_s_domain = self.loss_domain(domain_output.to(torch.float32), domain_label_mini.to(torch.float32))
 
-        # training model using target data
-        # domain_label = torch.ones(batch_size).long()
-
-        # # if cuda:
-        # #     t_img = t_img.cuda()
-        # #     domain_label = domain_label.cuda()
         if ((index_batch+1)*batch_size < len(s_label)):
           t_img_mini = s_img[index_batch*batch_size:(index_batch+1)*batch_size,:]
 
@@ -124,7 +130,7 @@ class DANN:
           t_img_mini = s_img[index_batch*batch_size:,:]
 
         _, domain_output = self.my_net(input_data=t_img_mini.to(torch.float32))
-        err_t_domain = self.loss_domain(domain_output.to(torch.float32), valid_d.to(torch.float32))
+        err_t_domain = self.loss_domain(domain_output.to(torch.float32), domain_label_mini.to(torch.float32))
         err = err_t_domain + err_s_domain + err_s_label
         err.backward()
         self.optimizer.step()
@@ -135,8 +141,7 @@ class DANN:
         sys.stdout.flush()
         # torch.save(self.my_net, '{0}/mnist_mnistm_model_epoch_current.pth'.format(model_root))
         index_batch += 1
-
-       
+      # print("\n arrurate rate is %.4f"%(self.acc_rate(class_output,s_label_mini)))
 
   '''
   torch.Size([13588, 310])
@@ -149,15 +154,8 @@ class DANN:
   def run(self):
     for folder in range(domain_num):
       train, test = self.fetch_data(folder)
-
-      # print(train[0].shape)
-      # print(train[1].shape)
-      # print(train[2].shape)
-      # print(test[0].shape)
-      # print(test[1].shape)
-      # print(test[2].shape)
-      # print(test[2])
-      self.train(5,3397,train, test)
+      self.train(500,3397,train, folder)
+      self.test(test)
       # self.test_init(test)
 
 if __name__ == '__main__':
