@@ -25,10 +25,15 @@ class CNNModel(nn.Module):
   def __init__(self):
     super(CNNModel, self).__init__()
     self.feature = nn.Sequential()
-    self.feature.add_module('jack1',nn.Linear(310,64))
-    self.feature.add_module('f_relu1', nn.ReLU(True))
-    self.feature.add_module('jack2', nn.Linear(64, 5))
-    self.feature.add_module('f_relu2', nn.ReLU(True))
+    self.feature.add_module('c_fc1', nn.Linear(310, 100))
+    # self.class_classifier.add_module('c_bn1', nn.BatchNorm1d(100))
+    self.feature.add_module('c_relu1', nn.ReLU(True))
+    self.feature.add_module('c_drop1', nn.Dropout())
+    self.feature.add_module('c_fc2', nn.Linear(100, 100))
+    # self.class_classifier.add_module('c_bn2', nn.BatchNorm1d(100))
+    self.feature.add_module('c_relu2', nn.ReLU(True))
+    self.feature.add_module('c_fc3', nn.Linear(100, 310))
+    self.feature.add_module('c_softmax', nn.LogSoftmax(dim=1))
 
     self.class_classifier = nn.Sequential()
     self.class_classifier.add_module('c_fc1', nn.Linear(310, 100))
@@ -48,13 +53,13 @@ class CNNModel(nn.Module):
     self.domain_classifier.add_module('d_fc2', nn.Linear(100, 5))
     self.domain_classifier.add_module('d_softmax', nn.LogSoftmax(dim=1))
 
-  def forward(self, input_data):
-    # feature = self.feature(input_data)
-    # feature = feature.view(-1,310)
+  def forward(self, input_data,alpha):
+    feature = self.feature(input_data)
+    feature = feature.view(-1,310)
     # print('shushuben\t',input_data.shape)
-    # reverse_feature = ReverseLayerF.apply(feature, alpha)
-    class_output = self.class_classifier(input_data)
-    domain_output = self.domain_classifier(input_data)
+    reverse_feature = ReverseLayerF.apply(feature, alpha)
+    class_output = self.class_classifier(feature)
+    domain_output = self.domain_classifier(reverse_feature)
 
     return class_output, domain_output
     
@@ -63,7 +68,7 @@ class DANN:
     with open('./data.pkl', 'rb') as f:
       self.data = pickle.load(f)
     self.my_net = CNNModel()
-    self.optimizer = torch.optim.Adam(self.my_net.parameters(), lr=lr)
+    self.optimizer = torch.optim.SGD(self.my_net.parameters(), lr=lr)
     self.loss_class = torch.nn.MSELoss()
     self.loss_domain = torch.nn.MSELoss()
 
@@ -95,41 +100,48 @@ class DANN:
   def test(self,test):
     # to do
     t_img,t_label,valid_d=test
-    class_output, valid_output = self.my_net(input_data=t_img.to(torch.float32))
-    acc_test = self.acc_rate(self,class_output,t_label)
-    acc_domain = self.acc_rate(self,valid_output,valid_d)
-    print('test acc is {} the acc_domain is {}'.format(acc_test,acc_domain))
+    p = float(len(t_label)*len(t_label))
+    alpha = 2. / (1. + np.exp(-10 * p)) - 1
+    class_output, valid_output = self.my_net(t_img.to(torch.float32), alpha)
+    acc_test = self.acc_rate(class_output,t_label)
+    acc_domain = self.acc_rate(valid_output,valid_d)
+    print('\ntest acc is {} the acc_domain is {}\n'.format(acc_test,acc_domain))
 
-    return 0
   def train(self,n_epoch,batch_size,train,folder):
     s_img, s_label,domain_label = train
     for epoch in range(n_epoch):
       index_batch = 0
       while((index_batch)*batch_size < len(s_label)):
+        p = float(index_batch + epoch * len(s_label)) / n_epoch /len(s_label)
+        alpha = 2. / (1. + np.exp(-10 * p)) - 1
         # training model using source data
         self.my_net.zero_grad()
-        # batch_size = len(s_label)
+
         if ((index_batch+1)*batch_size < len(s_label)):
           s_img_mini = s_img[index_batch*batch_size:(index_batch+1)*batch_size,:]
           s_label_mini = s_label[index_batch*batch_size:(index_batch+1)*batch_size,:]
-         
         else:
           s_img_mini = s_img[index_batch*batch_size:,:]
           s_label_mini = s_label[index_batch*batch_size:,:]
 
         domain_label_mini =domain_label[folder*batch_size:(folder+1)*batch_size,:]
-        class_output, domain_output = self.my_net(input_data=s_img_mini.to(torch.float32))
+        class_output, domain_output = self.my_net(s_img_mini.to(torch.float32),alpha)
+        # print('classes\t',class_output.shape)
+        # print('domain_output\t',domain_output.shape)
+        # sys.exit()
 
         err_s_label = self.loss_class(class_output.to(torch.float32), s_label_mini.to(torch.float32))
         err_s_domain = self.loss_domain(domain_output.to(torch.float32), domain_label_mini.to(torch.float32))
 
         if ((index_batch+1)*batch_size < len(s_label)):
-          t_img_mini = s_img[index_batch*batch_size:(index_batch+1)*batch_size,:]
+          t_img_mini = s_img_mini[index_batch*batch_size:(index_batch+1)*batch_size,:]
 
         else:
-          t_img_mini = s_img[index_batch*batch_size:,:]
+          t_img_mini = s_img_mini[index_batch*batch_size:,:]
 
-        _, domain_output = self.my_net(input_data=t_img_mini.to(torch.float32))
+        _, domain_output = self.my_net(t_img_mini.to(torch.float32),alpha)
+        print('domain_out\t',domain_output.shape,domain_label_mini.shape)
+        # sys.exit()
         err_t_domain = self.loss_domain(domain_output.to(torch.float32), domain_label_mini.to(torch.float32))
         err = err_t_domain + err_s_domain + err_s_label
         err.backward()
@@ -154,12 +166,11 @@ class DANN:
   def run(self):
     for folder in range(domain_num):
       train, test = self.fetch_data(folder)
-      self.train(500,3397,train, folder)
+      self.train(50,400,train, folder)
       self.test(test)
       # self.test_init(test)
 
 if __name__ == '__main__':
-  print('jacjajcajcjs')
   model = DANN()
   model.run()
 
